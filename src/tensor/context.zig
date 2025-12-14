@@ -23,6 +23,10 @@ pub fn default() Error!Self {
     return try init(.default);
 }
 
+pub fn sync(self: Self) !void {
+    return try self.stream.sync();
+}
+
 pub fn fork(self: Self) cuda.CudaError!Self {
     return Self{
         .device = self.device,

@@ -58,7 +58,8 @@ pub fn Linear(dtype: DType) type {
                 res = try res.add(ctx, b);
             }
 
-            return res;
+            // fix output shape to match input shape (besides out dim)
+            return try res.view(x.shape.replace(-1, res.shape.at(-1)));
         }
     };
 }
@@ -116,18 +117,26 @@ test "Linear forward" {
 
     try lin.weight.storage.cuda.hostToDevice(&weight_buf);
 
-    const x = try Tensor(.f32).fromSlice(gpu, &[_]f32{
+    const x_batch = try Tensor(.f32).fromSlice(gpu, &[_]f32{
         0.5, 1.5,
         3.5, 4.5,
-    }, .{ 2, 2 });
 
-    defer x.deinit();
+        0.5, 1.5,
+        3.5, 4.5,
 
-    const fwd = try lin.forward(ctx, x);
+        0.5, 1.5,
+        3.5, 4.5,
+    }, .{ 3, 2, 2 });
+
+    defer x_batch.deinit();
+
+    const fwd = try lin.forward(ctx, x_batch);
     defer fwd.deinit();
 
+    try ctx.sync();
+
     std.debug.print("fwd shape {f}\n", .{fwd.shape});
-    try std.testing.expect(fwd.shape.eql(.{ 2, 4 }));
+    try std.testing.expect(fwd.shape.eql(.{ 3, 2, 4 }));
 
     const fwd_h = try fwd.copy(host);
     defer fwd_h.deinit();
@@ -135,7 +144,13 @@ test "Linear forward" {
     std.debug.print("fwd out: {any}\n", .{fwd_h.s()});
 
     try expectTensorEqual(fwd, &[_]f32{
-        3.5000,  7.5000,  11.5000, 15.5000,
-        12.5000, 28.5000, 44.5000, 60.5000,
+        5,  13, 7,  15,
+        17, 49, 25, 57,
+
+        5,  13, 7,  15,
+        17, 49, 25, 57,
+
+        5,  13, 7,  15,
+        17, 49, 25, 57,
     });
 }

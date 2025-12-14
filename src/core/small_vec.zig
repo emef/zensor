@@ -43,30 +43,36 @@ pub fn SmallVec(T: type, max_dims: usize) type {
         }
 
         pub fn at(self: Self, i: i32) T {
+            return self.data[self.index(i)];
+        }
+
+        pub fn replace(self: Self, i: i32, val: T) Self {
+            var replaced = self;
+            replaced.data[self.index(i)] = val;
+            return replaced;
+        }
+
+        fn index(self: Self, i: anytype) u4 {
             if (i >= self.len or i < -@as(i32, @intCast(self.len))) {
                 @panic("out of bounds");
             }
 
             if (i < 0) {
-                const neg_i = @as(i32, @intCast(self.len)) + i;
-                return self.data[@intCast(neg_i)];
+                return self.len - @as(u4, @intCast(@abs(i)));
             }
 
-            return self.data[@intCast(i)];
+            return @intCast(i);
         }
 
-        pub fn pop(self: Self, index: usize) Self {
-            if (index >= self.len) {
-                @panic("trying to pop an index out of bounds");
-            }
-
+        pub fn pop(self: Self, pop_idx_: anytype) Self {
+            const pop_idx = self.index(pop_idx_);
             var popped = Self{
                 .data = undefined,
                 .len = 0,
             };
 
             for (0..self.len) |i| {
-                if (i == index) continue;
+                if (i == pop_idx) continue;
                 popped.data[popped.len] = self.data[i];
                 popped.len += 1;
             }

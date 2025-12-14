@@ -70,31 +70,18 @@ pub fn matmul(
         }
     }
 
-    // broadcast lhs to (batch, M, K)
-    if (lhs_dims == 1) {
-        lhs = try lhs.view(.{ 1, 1, lhs.shape.at(0) });
-    } else {
-        lhs = try lhs.view(.{ -1, lhs.shape.at(-2), lhs.shape.at(-1) });
+    // m is rows of lhs
+    // k is cols of lhs
+    // k is rows of rhs
+    // n is cols of rhs
+
+    const m = if (lhs_dims == 1) 1 else lhs.shape.at(-2);
+    const k = lhs.shape.at(-1);
+    const n = rhs.shape.at(-1);
+
+    if (rhs_dims > 1 and rhs.shape.at(-2) != k) {
+        return error.WrongShape;
     }
-
-    // broadcast rhs to (batch, K, N)
-    if (rhs_dims == 1) {
-        rhs = try rhs.view(.{ 1, 1, rhs.shape.at(0) });
-    } else {
-        rhs = try rhs.view(.{ -1, rhs.shape.at(-2), rhs.shape.at(-1) });
-    }
-
-    const m: i32 = @intCast(lhs.shape.at(1));
-    const k: i32 = @intCast(lhs.shape.at(2));
-    const n: i32 = @intCast(rhs.shape.at(2));
-
-    if (rhs.shape.at(1) != k) {
-        return error.WrongSize;
-    }
-
-    const out_batch = lhs.shape.at(0) * rhs.shape.at(0);
-    var out = try Tensor(C).init(lhs.loc(), .{ out_batch, m, n });
-    const out_stride = m * n;
 
     // since we are stored in row-major we need to do transpose trick:
     //   C^T = B^T A^T
@@ -106,20 +93,35 @@ pub fn matmul(
     var batch: i32 = 1;
     var lhs_stride: i32 = 0;
     var rhs_stride: i32 = 0;
-    if (lhs.shape.at(0) == 1) {
-        batch = @intCast(rhs.shape.at(0));
-        rhs_stride = @intCast(rhs.shape.at(1) * rhs.shape.at(2));
-    } else if (rhs.shape.at(0) == 1) {
-        batch = @intCast(lhs.shape.at(0));
-        lhs_stride = @intCast(lhs.shape.at(1) * lhs.shape.at(2));
-    } else {
+
+    if (lhs_dims > 2 and rhs_dims > 2) {
         return error.NotImplemented;
+    } else if (lhs_dims > 2) {
+        batch = batchDim(lhs.shape);
+        lhs_stride = m * k;
+    } else if (rhs_dims > 2) {
+        batch = batchDim(rhs.shape);
+        rhs_stride = k * n;
     }
 
-    std.debug.print("matmul {f} x {f}\n", .{ lhs.shape, rhs.shape });
+    var out = try Tensor(C).init(lhs.loc(), .{ batch, m, n });
+    const out_stride = m * n;
+
+    std.debug.print("matmul {f} x {f} (m={d} k={d} n={d}) trans_lhs={any}, trans_rhs={any}\n", .{
+        lhs.shape,
+        rhs.shape,
+        m,
+        k,
+        n,
+        transpose_lhs,
+        transpose_rhs,
+    });
 
     const lhs_ptr = lhs.storage.cuda.ptrOffset(rhs.offset);
     const rhs_ptr = rhs.storage.cuda.ptrOffset(lhs.offset);
+
+    const lda = if (transpose_rhs) k else n;
+    const ldb = if (transpose_lhs) m else k;
 
     const op = cublas.CublasGemmStridedBatch(f32, f32, f32){
         .handle = ctx.cublas, // cublas handle
@@ -128,11 +130,11 @@ pub fn matmul(
         .k = k, // cols of B^T (out)
         .A = rhs_ptr, // A ptr (rhs)
         .transpose_a = transpose_rhs,
-        .lda = n, // cols of B (rhs)
+        .lda = lda,
         .strideA = rhs_stride, // stride of B^T (rhs)
         .B = lhs_ptr, // B ptr (lhs)
         .transpose_b = transpose_lhs,
-        .ldb = k, // cols of A (lhs)
+        .ldb = ldb,
         .strideB = lhs_stride, // stride of A^T (lhs)
         .C = out.storage.cuda.ptr, // C ptr (out)
         .ldc = n, // cols of C (out)
@@ -153,6 +155,15 @@ pub fn matmul(
     }
 
     return out;
+}
+
+fn batchDim(sh: Shape) i32 {
+    if (sh.len < 3) unreachable;
+    var batch: i32 = 1;
+    for (0..sh.len - 2) |i| {
+        batch *= sh.data[i];
+    }
+    return batch;
 }
 
 test matmul {
@@ -194,8 +205,9 @@ test matmul {
         try std.testing.expectEqual(1, input_1d.shape.len);
 
         var out = try matmul(ctx, input_1d, weight, .f32);
-        out = try out.move(host);
         defer out.deinit();
+
+        try ctx.sync();
 
         try testing.expectEqual(out, &[_]f32{
             22, 28,
@@ -209,8 +221,9 @@ test matmul {
         try std.testing.expectEqual(2, input_2d.shape.len);
 
         var out = try matmul(ctx, input_2d, weight, .f32);
-        out = try out.move(host);
         defer out.deinit();
+
+        try ctx.sync();
 
         try testing.expectEqual(out, &[_]f32{
             22, 28,
@@ -223,9 +236,9 @@ test matmul {
     {
         try std.testing.expectEqual(3, input.shape.len);
         var out = try matmul(ctx, input, weight, .f32);
-
-        out = try out.move(host);
         defer out.deinit();
+
+        try ctx.sync();
 
         try testing.expectEqual(out, &[_]f32{
             22, 28,
@@ -265,8 +278,12 @@ test matmul {
         const out = try matmul(ctx, input_mT, weight_mt, .f32);
         defer out.deinit();
 
-        std.debug.print("mT out shape {any}\n", .{out.shape});
+        try ctx.sync();
+
         try std.testing.expect(out.shape.eql(.{ 2, 4, 3 }));
+
+        const out_h = try out.copy(host);
+        defer out_h.deinit();
 
         try testing.expectEqual(out, &[_]f32{
             5,  11, 17,
