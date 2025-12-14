@@ -1,7 +1,7 @@
 const core = @import("coretypes.zig");
 const Stream = @import("stream.zig").Stream;
 
-pub const CublasError = error{
+pub const Error = error{
     NotInitialized,
     AllocFailed,
     InvalidValue,
@@ -99,7 +99,7 @@ extern fn cublasSetStream_v2(handle: cublasHandle_t, stream: core.cudaStream_t) 
 pub const Handle = struct {
     ptr: cublasHandle_t,
 
-    pub fn init() CublasError!Handle {
+    pub fn init() Error!Handle {
         var ptr: cublasHandle_t = undefined;
 
         const status = cublasCreate_v2(&ptr);
@@ -184,14 +184,17 @@ pub fn CublasGemmStridedBatch(A: type, B: type, C: type) type {
 
     return struct {
         const Self = @This();
+
         handle: Handle,
         m: i32,
         n: i32,
         k: i32,
         A: ?*const anyopaque,
+        transpose_a: bool,
         lda: c_int,
         strideA: c_longlong,
         B: ?*const anyopaque,
+        transpose_b: bool,
         ldb: c_int,
         strideB: c_longlong,
         C: ?*anyopaque,
@@ -201,7 +204,7 @@ pub fn CublasGemmStridedBatch(A: type, B: type, C: type) type {
         alpha: f64 = 1,
         beta: f64 = 0,
 
-        pub fn exec(self: Self, handle: Handle, stream: Stream) CublasError!void {
+        pub fn exec(self: Self, handle: Handle, stream: Stream) Error!void {
             const alpha: scaleType = 1;
             const beta: scaleType = 0;
 
@@ -209,8 +212,8 @@ pub fn CublasGemmStridedBatch(A: type, B: type, C: type) type {
 
             const status = cublasGemmStridedBatchedEx(
                 self.handle.ptr,
-                .n,
-                .n,
+                if (self.transpose_a) .t else .n,
+                if (self.transpose_b) .t else .n,
                 @intCast(self.m),
                 @intCast(self.n),
                 @intCast(self.k),

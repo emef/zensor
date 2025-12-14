@@ -4,7 +4,7 @@ pub fn SmallVec(T: type, max_dims: usize) type {
     return struct {
         const Self = @This();
 
-        data: [max_dims]T,
+        data: [max_dims]T = undefined,
         len: u4,
 
         pub fn init(vecOrDims: anytype) Self {

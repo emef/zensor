@@ -1,7 +1,6 @@
 const std = @import("std");
 
 pub const Context = @import("context.zig");
-pub const mmul = @import("ops/mmul.zig").mmul;
 pub const ops = @import("ops/root.zig");
 const tensor = @import("tensor.zig");
 pub const max_dims = tensor.max_dims;

@@ -6,15 +6,16 @@ const tensor = @import("tensor");
 const Tensor = tensor.Tensor;
 const Location = tensor.Location;
 const Shape = tensor.Shape;
-
-const Context = @import("context.zig");
+const Context = tensor.Context;
+const Error = tensor.Error;
+const expectTensorEqual = tensor.testing.expectEqual;
 
 pub fn Linear(dtype: DType) type {
     return struct {
         const Self = @This();
 
-        a: Tensor(dtype),
-        b: ?Tensor(dtype),
+        weight: Tensor(dtype),
+        bias: ?Tensor(dtype),
 
         pub const Opts = struct {
             in_features: usize,
@@ -22,72 +23,42 @@ pub fn Linear(dtype: DType) type {
             bias: bool = true,
         };
 
-        pub fn init(loc: Location, opts: Opts) !Self {
-            const a_shape = Shape.init(.{ opts.in_features, opts.out_features });
-            switch (loc) {
-                .host => |alloc| {
-                    const a = try Tensor(dtype).allocHost(alloc, a_shape);
-                    var b: ?Tensor(dtype) = null;
-                    if (opts.bias) {
-                        b = try Tensor(dtype).allocHost(alloc, .{opts.out_features});
-                    }
-                    return Self{ .a = a, .b = b };
-                },
-                .cuda => |device| {
-                    const a = try Tensor(dtype).allocDevice(device, a_shape);
-                    var b: ?Tensor(dtype) = null;
-                    if (opts.bias) {
-                        b = try Tensor(dtype).allocDevice(device, .{opts.out_features});
-                    }
-                    return Self{ .a = a, .b = b };
-                },
-            }
+        pub fn init(loc: Location, opts: Opts) Error!Self {
+            const w_shape = Shape.init(.{ opts.out_features, opts.in_features });
+            const b_shape = Shape.init(.{opts.out_features});
+
+            return Self{
+                .weight = try Tensor(dtype).init(loc, w_shape),
+                .bias = if (opts.bias) try Tensor(dtype).init(loc, b_shape) else null,
+            };
         }
 
         pub fn deinit(self: Self) void {
-            self.a.deinit();
-            if (self.b) |b| b.deinit();
+            self.weight.deinit();
+            if (self.bias) |b| b.deinit();
         }
 
-        pub fn forward(self: Self, ctx: Context, x: Tensor(dtype)) !Tensor(dtype) {
-            if (!self.a.loc().eql(x.loc())) {
-                return error.WrongDevice;
-            }
-
-            if (self.b) |b| {
-                if (!b.loc().eql(x.loc())) {
-                    return error.WrongDevice;
-                }
-            }
-
-            if (x.shape.at(-1) != self.a.shape.at(0)) {
+        pub fn forward(self: Self, ctx: Context, x: Tensor(dtype)) Error!Tensor(dtype) {
+            if (x.shape.at(-1) != self.weight.shape.at(1)) {
                 std.debug.print(
                     "expected last dim {d}, found {d}\n",
                     .{
                         x.shape.at(-1),
-                        self.a.shape.at(0),
+                        self.weight.shape.at(0),
                     },
                 );
                 return error.WrongShape;
             }
 
-            switch (x.loc()) {
-                .host => {
-                    return error.NotImplemented;
-                },
-                .cuda => {
-                    return self.forwardCuda(ctx, x);
-                },
-            }
-        }
-
-        fn forwardCuda(self: Self, ctx: Context, x: Tensor(dtype)) !Tensor(dtype) {
             // (batch, d_in)
             const x_in = try x.view(.{ -1, x.shape.at(-1) });
-            _ = x_in;
-            _ = self;
-            _ = ctx;
-            return error.NotImplemented;
+
+            var res = try x_in.matmul(ctx, self.weight.mT());
+            if (self.bias) |b| {
+                res = try res.add(ctx, b);
+            }
+
+            return res;
         }
     };
 }
@@ -100,9 +71,9 @@ test "Linear shape" {
     });
     defer lin.deinit();
 
-    try std.testing.expect(lin.a.shape.eql(.{ 10, 20 }));
+    try std.testing.expect(lin.weight.shape.eql(.{ 20, 10 }));
 
-    if (lin.b) |b| {
+    if (lin.bias) |b| {
         try std.testing.expect(b.shape.eql(.{20}));
     } else {
         return error.TestUnexpectedResult;
@@ -123,9 +94,48 @@ test "Linear forward validation" {
     defer x.deinit();
 
     try std.testing.expectError(error.WrongShape, lin.forward(ctx, x));
+}
 
-    const x_host = try Tensor(.f32).allocHost(std.testing.allocator, .{10});
-    defer x_host.deinit();
+test "Linear forward" {
+    const ctx = try Context.default();
+    const gpu: Location = .{ .cuda = ctx.device };
+    const host: Location = .{ .host = std.testing.allocator };
+    const lin = try Linear(.f32).init(gpu, .{
+        .in_features = 2,
+        .out_features = 4,
+        .bias = false,
+    });
+    defer lin.deinit();
 
-    try std.testing.expectError(error.WrongDevice, lin.forward(ctx, x_host));
+    var weight_buf = [8]f32{
+        1, 3,
+        5, 7,
+        2, 4,
+        6, 8,
+    };
+
+    try lin.weight.storage.cuda.hostToDevice(&weight_buf);
+
+    const x = try Tensor(.f32).fromSlice(gpu, &[_]f32{
+        0.5, 1.5,
+        3.5, 4.5,
+    }, .{ 2, 2 });
+
+    defer x.deinit();
+
+    const fwd = try lin.forward(ctx, x);
+    defer fwd.deinit();
+
+    std.debug.print("fwd shape {f}\n", .{fwd.shape});
+    try std.testing.expect(fwd.shape.eql(.{ 2, 4 }));
+
+    const fwd_h = try fwd.copy(host);
+    defer fwd_h.deinit();
+
+    std.debug.print("fwd out: {any}\n", .{fwd_h.s()});
+
+    try expectTensorEqual(fwd, &[_]f32{
+        3.5000,  7.5000,  11.5000, 15.5000,
+        12.5000, 28.5000, 44.5000, 60.5000,
+    });
 }

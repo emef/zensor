@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const cuda = @import("cuda");
+const cublas = cuda.cublas;
 const DType = @import("core").DType;
 const SmallVec = @import("core").SmallVec;
 
@@ -15,8 +16,9 @@ pub const HostError = error{
     OutOfMemory,
 };
 
-pub const Error = HostError || cuda.Error || error{
+pub const Error = HostError || cuda.Error || cublas.Error || error{
     WrongSize,
+    WrongShape,
     WrongDevice,
     WrongType,
     NotImplemented,
@@ -137,6 +139,12 @@ pub fn Tensor(dtype_: DType) type {
             };
         }
 
+        pub fn format(self: Self, w: anytype) !void {
+            _ = self;
+            _ = w;
+            return error.TODO;
+        }
+
         pub fn allocDevice(device: cuda.Device, shapeOrDims: anytype) cuda.Error!Self {
             const shape = Shape.init(shapeOrDims);
 
@@ -171,6 +179,7 @@ pub fn Tensor(dtype_: DType) type {
             mem: []const T,
             shapeOrDims: anytype,
         ) Error!Self {
+            // TODO: support -1 dims and infer them
             const shape = Shape.init(shapeOrDims);
             switch (dest) {
                 .host => |alloc| {
@@ -354,7 +363,7 @@ pub fn Tensor(dtype_: DType) type {
             }
 
             if (self.shape.elems() != newShape.elems()) {
-                return error.TODO;
+                return error.WrongShape;
             }
 
             if (!self.isContiguous()) {
@@ -410,6 +419,57 @@ pub fn Tensor(dtype_: DType) type {
             expanded.shape = newShape;
             expanded.strides = newStrides;
             return expanded;
+        }
+
+        pub fn squeezeDim(self: Self, dim: i32) Self {
+            if (self.shape.at(dim) != 1) {
+                @panic("cannot non size 1 dimension");
+            }
+
+            var newShape: Shape = .{ .len = 0 };
+            var newStrides: Strides = .{ .len = 0 };
+
+            for (0..self.shape.len) |i| {
+                if (i == dim) continue;
+                newShape.data[newShape.len] = self.shape.data[i];
+                newShape.len += 1;
+                newStrides.data[newStrides.len] = self.strides.data[i];
+                newStrides.len += 1;
+            }
+
+            var squeezed = self;
+            squeezed.owned = false;
+            squeezed.shape = newShape;
+            squeezed.strides = newStrides;
+            return squeezed;
+        }
+
+        pub fn unsqueeze(self: Self, dim_: i32) Self {
+            var dim = dim_;
+            if (dim < 0) {
+                dim = dim + self.shape.len + 1;
+            }
+
+            var newShape: Shape = .{ .len = self.shape.len + 1 };
+            var newStrides: Strides = .{ .len = self.strides.len + 1 };
+
+            var count: usize = 0;
+            for (0..self.shape.len) |i| {
+                if (count == dim) {
+                    newShape.data[count] = 1;
+                    newStrides.data[count] = 0;
+                    count += 1;
+                }
+                newShape.data[count] = self.shape.data[i];
+                newStrides.data[count] = self.strides.data[i];
+                count += 1;
+            }
+
+            var unsqueezed = self;
+            unsqueezed.owned = false;
+            unsqueezed.shape = newShape;
+            unsqueezed.strides = newStrides;
+            return unsqueezed;
         }
 
         pub fn select(self: Self, selector: anytype) !Self {
@@ -471,7 +531,7 @@ pub fn Tensor(dtype_: DType) type {
         }
 
         pub fn item(self: Self) Error!T {
-            if (self.shape.len != 0) {
+            if (self.shape.elems() != 1) {
                 return error.WrongSize;
             }
 
@@ -493,7 +553,7 @@ pub fn Tensor(dtype_: DType) type {
         }
 
         // Transpose the matrix dimensions (last 2) of the tensor.
-        pub fn mT(self: Self) Tensor {
+        pub fn mT(self: Self) Self {
             const n_dims = self.shape.len;
 
             var transposed = self;
@@ -515,12 +575,38 @@ pub fn Tensor(dtype_: DType) type {
             return transposed;
         }
 
+        pub fn arange(dest: Location, comptime start: i32, comptime end: i32) !Self {
+            if (dtype == .bool) @compileError("bool is unsupported for arange");
+
+            const caster = DType.caster(.i32, dtype);
+            var buf: [end - start]T = undefined;
+
+            const n: usize = @intCast(end - start);
+            for (0..n) |i| {
+                const value: i32 = start + @as(i32, @intCast(i));
+                buf[i] = caster.cast(value);
+            }
+
+            return try fromSlice(dest, &buf, .{end - start});
+        }
+
         pub fn eql(self: Self, ctx: Context, other: anytype) Error!Tensor(.bool) {
             return try ops.eql(ctx, self, other);
         }
 
         pub fn all(self: Self, ctx: Context) Error!bool {
             return try ops.all(ctx, self);
+        }
+
+        pub fn matmul(self: Self, ctx: Context, rhs: Self) Error!Self {
+            return try ops.matmul(ctx, self, rhs, dtype);
+        }
+
+        pub fn add(self: Self, ctx: Context, rhs: Self) Error!Self {
+            _ = self;
+            _ = ctx;
+            _ = rhs;
+            return error.NotImplemented;
         }
     };
 }
@@ -742,10 +828,9 @@ test "select" {
 
 test "expand" {
     const host: Location = .{ .host = std.testing.allocator };
-    // const gpu: Location = .{ .cuda = cuda.device(0) };
+    const gpu: Location = .{ .cuda = cuda.device(0) };
 
-    //for (&[_]Location{ host, gpu }) |loc| {
-    for (&[_]Location{host}) |loc| {
+    for (&[_]Location{ host, gpu }) |loc| {
         const x = try Tensor(.f32).fromSlice(
             loc,
             &[_]f32{
@@ -763,4 +848,135 @@ test "expand" {
             },
         );
     }
+}
+
+test "unsqueeze" {
+    const host: Location = .{ .host = std.testing.allocator };
+    const x = try Tensor(.i32).fromSlice(host, &[16]i32{
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    }, .{ 2, 2, 4 });
+    defer x.deinit();
+
+    const test_cases: []const struct {
+        dim: i32,
+        expect_err: bool = false,
+    } = &.{
+        .{ .dim = 0 },
+        .{ .dim = 1 },
+        .{ .dim = 2 },
+        .{ .dim = -1 },
+        .{ .dim = -2 },
+        .{ .dim = -3 },
+    };
+
+    var out_buf: [16]i32 = undefined;
+
+    for (test_cases) |tc| {
+        const unsqueezed = x.unsqueeze(tc.dim);
+
+        var it = try unsqueezed.iter();
+        try it.into(&out_buf);
+        try std.testing.expectEqualSlices(i32, x.s(), &out_buf);
+    }
+}
+
+test "squeezeDim" {
+    const host: Location = .{ .host = std.testing.allocator };
+    const x = try Tensor(.i32).fromSlice(host, &[16]i32{
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    }, .{ 1, 2, 2, 1, 4 });
+    defer x.deinit();
+
+    var squeezed = x.squeezeDim(0);
+    try std.testing.expect(squeezed.shape.eql(.{ 2, 2, 1, 4 }));
+
+    squeezed = squeezed.squeezeDim(2);
+    try std.testing.expect(squeezed.shape.eql(.{ 2, 2, 4 }));
+}
+
+test "arange" {
+    const device = cuda.device(0);
+    const host: Location = .{ .host = std.testing.allocator };
+    const gpu: Location = .{ .cuda = device };
+
+    for (&[_]Location{ host, gpu }) |loc| {
+        {
+            var x = try Tensor(.i32).arange(loc, 0, 10);
+            defer x.deinit();
+
+            var x_out = try x.move(host);
+            defer x_out.deinit();
+
+            for (x_out.s(), 0..) |val, i| {
+                try std.testing.expectEqual(@as(i32, @intCast(i)), val);
+            }
+        }
+
+        {
+            var x = try Tensor(.i32).arange(loc, -20, -10);
+            defer x.deinit();
+
+            var x_out = try x.move(host);
+            defer x_out.deinit();
+
+            for (x_out.s(), 0..) |val, i| {
+                const expect: i32 = -20 + @as(i32, @intCast(i));
+                try std.testing.expectEqual(expect, val);
+            }
+        }
+
+        {
+            var x = try Tensor(.i32).arange(loc, 10, 20);
+            defer x.deinit();
+
+            var x_out = try x.move(host);
+            defer x_out.deinit();
+
+            for (x_out.s(), 0..) |val, i| {
+                const expect: i32 = 10 + @as(i32, @intCast(i));
+                try std.testing.expectEqual(expect, val);
+            }
+        }
+    }
+}
+
+test "mT" {
+    const host: Location = .{ .host = std.testing.allocator };
+    const x = try Tensor(.i32).fromSlice(host, &[16]i32{
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    }, .{ 2, 2, 4 });
+    defer x.deinit();
+
+    const x_mt = x.mT();
+    try std.testing.expect(x_mt.shape.eql(.{ 2, 4, 2 }));
+
+    const expect = [16]i32{
+        1, 5,
+        2, 6,
+        3, 7,
+        4, 8,
+
+        1, 5,
+        2, 6,
+        3, 7,
+        4, 8,
+    };
+
+    var out: [16]i32 = undefined;
+    var it = try x_mt.iter();
+    try it.into(&out);
+
+    try std.testing.expectEqualSlices(i32, &expect, &out);
 }

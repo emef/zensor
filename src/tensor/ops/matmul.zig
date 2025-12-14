@@ -9,14 +9,15 @@ const tensor = @import("../tensor.zig");
 const Shape = tensor.Shape;
 const Tensor = tensor.Tensor;
 const Location = tensor.Location;
+const Error = tensor.Error;
 const testing = @import("../testing.zig");
 
-pub fn mmul(
+pub fn matmul(
     ctx: Context,
     lhs_in: anytype,
     rhs_in: anytype,
     comptime C: DType,
-) !Tensor(C) {
+) Error!Tensor(C) {
     const A: DType = @TypeOf(lhs_in).dtype;
     const B: DType = @TypeOf(rhs_in).dtype;
 
@@ -24,8 +25,11 @@ pub fn mmul(
         return error.WrongDevice;
     }
 
-    const lhs_dims = lhs_in.shape.len;
-    const rhs_dims = rhs_in.shape.len;
+    var lhs: Tensor(A) = lhs_in;
+    var rhs: Tensor(B) = rhs_in;
+
+    const lhs_dims = lhs.shape.len;
+    const rhs_dims = rhs.shape.len;
 
     if (lhs_dims == 1 and rhs_dims == 1) {
         // dot product
@@ -49,21 +53,35 @@ pub fn mmul(
     // broadcast (and thus must be broadcastable). The last 2, the matrix
     // dimensions, are handled as in the matrix-matrix product.
 
-    var lhs: Tensor(A) = undefined;
-    var rhs: Tensor(B) = undefined;
+    var transpose_lhs: bool = false;
+    var transpose_rhs: bool = false;
+    if (lhs_dims >= 2 and !lhs.isContiguous()) {
+        if (lhs.mT().isContiguous()) {
+            transpose_lhs = true;
+        } else {
+            return error.NotContiguous;
+        }
+    }
+    if (rhs_dims >= 2 and !rhs.isContiguous()) {
+        if (rhs.mT().isContiguous()) {
+            transpose_rhs = true;
+        } else {
+            return error.NotContiguous;
+        }
+    }
 
     // broadcast lhs to (batch, M, K)
     if (lhs_dims == 1) {
-        lhs = try lhs_in.view(.{ 1, 1, lhs_in.shape.at(0) });
+        lhs = try lhs.view(.{ 1, 1, lhs.shape.at(0) });
     } else {
-        lhs = try lhs_in.view(.{ -1, lhs_in.shape.at(-2), lhs_in.shape.at(-1) });
+        lhs = try lhs.view(.{ -1, lhs.shape.at(-2), lhs.shape.at(-1) });
     }
 
     // broadcast rhs to (batch, K, N)
     if (rhs_dims == 1) {
-        rhs = try rhs_in.view(.{ 1, 1, rhs_in.shape.at(0) });
+        rhs = try rhs.view(.{ 1, 1, rhs.shape.at(0) });
     } else {
-        rhs = try rhs_in.view(.{ -1, rhs_in.shape.at(-2), rhs_in.shape.at(-1) });
+        rhs = try rhs.view(.{ -1, rhs.shape.at(-2), rhs.shape.at(-1) });
     }
 
     const m: i32 = @intCast(lhs.shape.at(1));
@@ -98,15 +116,7 @@ pub fn mmul(
         return error.NotImplemented;
     }
 
-    // TODO: optimize mT tensors without calling .contiguous()
-    if (!lhs.isContiguous()) {
-        // TODO: call .contiguous()
-        return error.NotImplemented;
-    }
-    if (!rhs.isContiguous()) {
-        // TODO: call .contiguous()
-        return error.NotImplemented;
-    }
+    std.debug.print("matmul {f} x {f}\n", .{ lhs.shape, rhs.shape });
 
     const lhs_ptr = lhs.storage.cuda.ptrOffset(rhs.offset);
     const rhs_ptr = rhs.storage.cuda.ptrOffset(lhs.offset);
@@ -117,9 +127,11 @@ pub fn mmul(
         .n = m, // cols of A^T (lhs)
         .k = k, // cols of B^T (out)
         .A = rhs_ptr, // A ptr (rhs)
+        .transpose_a = transpose_rhs,
         .lda = n, // cols of B (rhs)
         .strideA = rhs_stride, // stride of B^T (rhs)
         .B = lhs_ptr, // B ptr (lhs)
+        .transpose_b = transpose_lhs,
         .ldb = k, // cols of A (lhs)
         .strideB = lhs_stride, // stride of A^T (lhs)
         .C = out.storage.cuda.ptr, // C ptr (out)
@@ -134,12 +146,16 @@ pub fn mmul(
 
     if (lhs_dims == 1) {
         out = try out.view(.{out.shape.at(-1)});
+    } else if (lhs_dims == 2) {
+        if (out.shape.at(0) != 1) unreachable;
+        // TODO: squeeze
+        out = try out.view(.{ out.shape.at(1), out.shape.at(2) });
     }
 
     return out;
 }
 
-test mmul {
+test matmul {
     const ctx = try Context.default();
     const device = cuda.device(0);
     const gpu: Location = .{ .cuda = device };
@@ -165,9 +181,9 @@ test mmul {
     const weight = try Tensor(.f32).fromSlice(
         gpu,
         &[_]f32{
-            1.0, 0.0,
-            0.0, 1.0,
-            0.0, 0.0,
+            1.0, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
         },
         .{ 3, 2 },
     );
@@ -177,47 +193,95 @@ test mmul {
         const input_1d = try input.select(.{ 0, 0 });
         try std.testing.expectEqual(1, input_1d.shape.len);
 
-        var out = try mmul(ctx, input_1d, weight, .f32);
+        var out = try matmul(ctx, input_1d, weight, .f32);
         out = try out.move(host);
         defer out.deinit();
 
         try testing.expectEqual(out, &[_]f32{
-            1.0, 2.0,
+            22, 28,
         });
+
+        try std.testing.expect(out.shape.eql(.{2}));
     }
 
     {
         const input_2d = try input.select(.{0});
         try std.testing.expectEqual(2, input_2d.shape.len);
 
-        var out = try mmul(ctx, input_2d, weight, .f32);
+        var out = try matmul(ctx, input_2d, weight, .f32);
         out = try out.move(host);
         defer out.deinit();
 
         try testing.expectEqual(out, &[_]f32{
-            1.0, 2.0,
-            4.0, 5.0,
+            22, 28,
+            49, 64,
         });
+
+        try std.testing.expect(out.shape.eql(.{ 2, 2 }));
     }
 
     {
         try std.testing.expectEqual(3, input.shape.len);
-        var out = try mmul(ctx, input, weight, .f32);
+        var out = try matmul(ctx, input, weight, .f32);
 
         out = try out.move(host);
         defer out.deinit();
 
         try testing.expectEqual(out, &[_]f32{
-            1.0, 2.0,
-            4.0, 5.0,
+            22, 28,
+            49, 64,
 
-            1.0, 1.0,
-            2.0, 2.0,
+            9,  12,
+            18, 24,
 
-            0.0, 0.0,
-            1.0, 2.0,
+            0,  0,
+            17, 22,
+        });
+
+        try std.testing.expect(out.shape.eql(.{ 3, 2, 2 }));
+    }
+
+    // test mT
+    {
+        const input_mT = try Tensor(.f32).fromSlice(
+            gpu,
+            &[_]f32{
+                1, 2,
+                3, 4,
+                4, 5,
+                6, 7,
+
+                8, 8,
+                0, 0,
+                9, 9,
+                0, 0,
+            },
+            .{ 2, 4, 2 },
+        );
+
+        const weight_mt = weight.mT();
+        try std.testing.expect(weight_mt.shape.eql(.{ 2, 3 }));
+
+        const out = try matmul(ctx, input_mT, weight_mt, .f32);
+        defer out.deinit();
+
+        std.debug.print("mT out shape {any}\n", .{out.shape});
+        try std.testing.expect(out.shape.eql(.{ 2, 4, 3 }));
+
+        try testing.expectEqual(out, &[_]f32{
+            5,  11, 17,
+            11, 25, 39,
+            14, 32, 50,
+            20, 46, 72,
+
+            24, 56, 88,
+            0,  0,  0,
+            27, 63, 99,
+            0,  0,  0,
         });
     }
 
     //TODO: mixed precision
+    //TODO: mixed dtypes
+
 }

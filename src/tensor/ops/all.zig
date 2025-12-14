@@ -59,10 +59,7 @@ fn cuda_all(
 
     try ctx.stream.sync();
 
-    var out_buf: [1]i32 = undefined;
-    try out.storage.cuda.deviceToHost(.{ .len = 1 }, &out_buf);
-
-    return out_buf[0] != 0;
+    return try out.item() != 0;
 }
 
 test all {

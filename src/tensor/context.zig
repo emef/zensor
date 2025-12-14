@@ -3,7 +3,7 @@ const std = @import("std");
 const cuda = @import("cuda");
 const cublas_ = cuda.cublas;
 
-const ContextError = cuda.Error || cublas_.CublasError;
+const Error = @import("root.zig").Error;
 
 const Self = @This();
 
@@ -11,7 +11,7 @@ device: cuda.Device,
 stream: cuda.Stream,
 cublas: cublas_.Handle,
 
-pub fn init(dev: cuda.Device) ContextError!Self {
+pub fn init(dev: cuda.Device) Error!Self {
     return Self{
         .device = dev,
         .stream = try cuda.Stream.init(dev),
@@ -19,7 +19,7 @@ pub fn init(dev: cuda.Device) ContextError!Self {
     };
 }
 
-pub fn default() ContextError!Self {
+pub fn default() Error!Self {
     return try init(.default);
 }
 

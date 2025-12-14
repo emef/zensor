@@ -78,6 +78,17 @@ pub fn TensorIterator(dtype: DType) type {
 
             return self.slice[offset];
         }
+
+        pub fn into(self: *Self, buf: []T) !void {
+            if (buf.len < self.shape.elems()) {
+                return error.WrongSize;
+            }
+
+            var i: usize = 0;
+            while (self.next()) |elem| : (i += 1) {
+                buf[i] = elem;
+            }
+        }
     };
 }
 
