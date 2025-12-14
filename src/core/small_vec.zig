@@ -42,11 +42,11 @@ pub fn SmallVec(T: type, max_dims: usize) type {
             try writer.print("{d})", .{self.data[self.len - 1]});
         }
 
-        pub fn at(self: Self, i: i32) T {
+        pub fn at(self: Self, i: anytype) T {
             return self.data[self.index(i)];
         }
 
-        pub fn replace(self: Self, i: i32, val: T) Self {
+        pub fn replace(self: Self, i: anytype, val: T) Self {
             var replaced = self;
             replaced.data[self.index(i)] = val;
             return replaced;
