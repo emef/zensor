@@ -55,6 +55,7 @@ pub fn TensorIterator(dtype: DType) type {
                 .shape = shape,
                 .strides = strides,
                 .slice = slice,
+                .done = slice.len == 0,
             };
         }
 

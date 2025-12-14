@@ -7,7 +7,7 @@ pub const Dim3 = extern struct {
 };
 
 pub const ElemRange = struct {
-    offset: usize,
+    offset: usize = 0,
     len: usize,
 };
 
