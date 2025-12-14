@@ -5,23 +5,26 @@ const DType = @import("core").DType;
 const SmallVec = @import("core").SmallVec;
 
 const Context = @import("context.zig");
+const expectTensorEqual = @import("testing.zig").expectEqual;
 const ops = @import("ops/root.zig");
 const TensorIterator = @import("iterator.zig").TensorIterator;
 
-pub const max_dims = 16;
+pub const max_dims = 8;
 
 pub const HostError = error{
     OutOfMemory,
-    WrongSize,
 };
 
 pub const Error = HostError || cuda.Error || error{
+    WrongSize,
     WrongDevice,
+    WrongType,
     NotImplemented,
+    NotContiguous,
 };
 
-pub const Shape = SmallVec(i64, max_dims);
-pub const Strides = SmallVec(i64, max_dims);
+pub const Shape = SmallVec(i32, max_dims);
+pub const Strides = SmallVec(i32, max_dims);
 
 fn stridesFromShape(shape: Shape) Strides {
     var strides = Strides{
@@ -183,7 +186,7 @@ pub fn Tensor(dtype_: DType) type {
             }
         }
 
-        pub fn fromCudaBuffer(mem: cuda.DeviceMem(dtype), shapeOrDims: anytype) HostError!Self {
+        pub fn fromCudaBuffer(mem: cuda.DeviceMem(dtype), shapeOrDims: anytype) Error!Self {
             const shape = Shape.init(shapeOrDims);
 
             if (shape.elems() != mem.len) {
@@ -371,6 +374,9 @@ pub fn Tensor(dtype_: DType) type {
             // stride to 0. -1 implies keep dimension the same.
             // singleton dimensions must remain the same
 
+            // TODO: this only handles new dimensions but doesn't
+            // handle expanding dimensions of size 1.
+
             var newShape = Shape.init(shapeOrDims);
 
             if (newShape.len < self.shape.len) {
@@ -411,14 +417,14 @@ pub fn Tensor(dtype_: DType) type {
                 return error.TODO;
             }
 
-            var indexes: SmallVec(i64, max_dims) = undefined;
+            var indexes: SmallVec(i32, max_dims) = undefined;
             switch (@typeInfo(@TypeOf(selector))) {
                 .int, .comptime_int => {
                     indexes.data[0] = @intCast(selector);
                     indexes.len = 1;
                 },
                 .@"struct" => {
-                    indexes = SmallVec(i64, max_dims).init(selector);
+                    indexes = SmallVec(i32, max_dims).init(selector);
                 },
                 else => @compileError("only int or tuple allowed in select()"),
             }
@@ -450,19 +456,15 @@ pub fn Tensor(dtype_: DType) type {
         pub fn isContiguous(self: Self) bool {
             if (self.shape.len == 0) return true;
 
-            if (self.strides.at(-1) != 1) {
-                return false;
-            }
-
-            // TODO: this seems janky and maybe wrong?
-            std.debug.print("shape = {f}, strides = {f}\n", .{ self.shape, self.strides });
-            if (self.shape.len == 1) return true;
-
-            for (0..self.shape.len - 2) |i| {
-                const idx: i32 = @intCast(i);
-                if (self.strides.at(idx) != self.strides.at(idx + 1) * self.shape.at(idx + 1)) {
-                    return false;
-                }
+            var expected: i32 = 1;
+            var i: i32 = @intCast(self.shape.len - 1);
+            while (i >= 0) : (i -= 1) {
+                const size = self.shape.at(i);
+                const stride = self.strides.at(i);
+                if (size == 0) return false;
+                if (size == 1) continue;
+                if (stride != expected) return false;
+                expected *= size;
             }
 
             return true;
@@ -499,12 +501,12 @@ pub fn Tensor(dtype_: DType) type {
 
             if (n_dims >= 2) {
                 std.mem.swap(
-                    i64,
+                    i32,
                     &transposed.shape.data[n_dims - 2],
                     &transposed.shape.data[n_dims - 1],
                 );
                 std.mem.swap(
-                    i64,
+                    i32,
                     &transposed.strides.data[n_dims - 2],
                     &transposed.strides.data[n_dims - 1],
                 );
@@ -736,4 +738,29 @@ test "select" {
     try std.testing.expect(selected.isContiguous());
     try std.testing.expect(selected.shape.eql(.{}));
     try std.testing.expectEqual(4.0, try selected.item());
+}
+
+test "expand" {
+    const host: Location = .{ .host = std.testing.allocator };
+    // const gpu: Location = .{ .cuda = cuda.device(0) };
+
+    //for (&[_]Location{ host, gpu }) |loc| {
+    for (&[_]Location{host}) |loc| {
+        const x = try Tensor(.f32).fromSlice(
+            loc,
+            &[_]f32{
+                1.0, 2.0, 3.0,
+            },
+            .{3},
+        );
+        defer x.deinit();
+
+        try expectTensorEqual(
+            try x.expand(.{ 2, 3 }),
+            &[_]f32{
+                1, 2, 3,
+                1, 2, 3,
+            },
+        );
+    }
 }

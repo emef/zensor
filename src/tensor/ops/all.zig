@@ -24,12 +24,13 @@ fn host_all(in: anytype) Error!bool {
     const to_bool = DType.caster(in_type, .bool);
     var it = try in.iter();
 
-    var all_true = true;
     while (it.next()) |el| {
-        all_true = all_true and to_bool.cast(el);
+        if (!to_bool.cast(el)) {
+            return false;
+        }
     }
 
-    return all_true;
+    return true;
 }
 
 fn cuda_all(

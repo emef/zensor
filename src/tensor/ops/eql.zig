@@ -1,13 +1,16 @@
 const std = @import("std");
 
+const cuda = @import("cuda");
 const DType = @import("core").DType;
 
 const broadcastTensors = @import("../broadcast.zig").broadcastTensors;
 const Context = @import("../context.zig");
-const tensor = @import("../tensor.zig");
+const KEql = @import("../kernels/root.zig").KEql;
+const tensor = @import("../root.zig");
 const Tensor = tensor.Tensor;
 const Location = tensor.Location;
 const Error = tensor.Error;
+const expectTensorEqual = tensor.testing.expectEqual;
 
 pub fn eql(
     ctx: Context,
@@ -55,49 +58,124 @@ fn cuda_eql(
     ctx: Context,
     bcast: anytype,
 ) Error!Tensor(.bool) {
-    _ = ctx;
-    _ = bcast;
-    return error.NotImplemented;
+    const device = bcast.left.loc().cuda;
+    const dtype = @TypeOf(bcast.left).dtype;
+    const shape = bcast.left.shape;
+
+    if (@TypeOf(bcast.right).dtype != dtype) {
+        return error.WrongType;
+    }
+
+    const out = try Tensor(.bool).allocDevice(device, shape);
+
+    try cuda.launchKernel(
+        device,
+        try KEql(dtype).init(.{
+            .a = bcast.left,
+            .b = bcast.right,
+            .out = out,
+        }),
+        ctx.stream,
+    );
+
+    return out;
 }
 
 test eql {
     const ctx = try Context.default();
     const host: Location = .{ .host = std.testing.allocator };
-    const left = try Tensor(.i32).fromSlice(host, &[_]i32{
-        1, 2,
-    }, .{2});
-    defer left.deinit();
-    const right = try Tensor(.f32).fromSlice(host, &[_]f32{
-        1, 2,
-        1, 2,
-        1, 2,
-        1, 2,
-        1, 2,
-    }, .{ 5, 2 });
-    defer right.deinit();
+    const gpu: Location = .{ .cuda = cuda.device(0) };
 
-    {
-        const eql_tensor = try eql(ctx, left, right);
-        defer eql_tensor.deinit();
+    const test_cases: []const struct {
+        left: []const i32,
+        right: []const i32,
+        expect: ?[]const bool = null,
+        expect_err: bool = false,
+    } = &.{
+        .{
+            .left = &.{
+                1, 2,
+            },
+            .right = &.{
+                1, 2,
+                1, 2,
+                1, 2,
+            },
+            .expect = &.{
+                true, true,
+                true, true,
+                true, true,
+            },
+        },
 
-        var eql_it = try eql_tensor.iter();
-        while (eql_it.next()) |el| {
-            try std.testing.expect(el);
-        }
-    }
+        .{
+            .left = &.{
+                1, 2,
+            },
+            .right = &.{
+                1, 2,
+                0, 2,
+                1, 20,
+                8, 8,
+            },
+            .expect = &.{
+                true,  true,
+                false, true,
+                true,  false,
+                false, false,
+            },
+        },
 
-    {
-        // the even indices are all wrong now
-        left.s()[0] = 0;
+        .{
+            .left = &.{
+                1, 2,
+            },
+            .right = &.{
+                1, 2,
+                0, 2,
+                1, 20,
+                8, 8,
+            },
+            .expect = &.{
+                true,  true,
+                false, true,
+                true,  false,
+                false, false,
+            },
+        },
+    };
 
-        const eql_tensor = try eql(ctx, left, right);
-        defer eql_tensor.deinit();
+    for (&[_]Location{ host, gpu }) |loc| {
+        for (test_cases) |tc| {
+            var left = try Tensor(.i32).fromSlice(loc, tc.left, .{tc.left.len});
+            defer left.deinit();
+            var right = try Tensor(.i32).fromSlice(loc, tc.right, .{tc.right.len});
+            defer right.deinit();
 
-        var eql_it = try eql_tensor.iter();
-        var i: usize = 0;
-        while (eql_it.next()) |el| : (i += 1) {
-            const expect_eq = i % 2 == 1;
-            try std.testing.expectEqual(expect_eq, el);
+            var eql_tensor = eql(
+                ctx,
+                // TODO: try left.view(.{ -1, 2 }),
+                try left.view(.{2}),
+                try right.view(.{ -1, 2 }),
+            ) catch {
+                if (!tc.expect_err) {
+                    return error.TestFailed;
+                }
+                continue;
+            };
+            defer eql_tensor.deinit();
+
+            try ctx.stream.sync();
+
+            const eql_h = try eql_tensor.move(host);
+            defer eql_h.deinit();
+
+            const expect = tc.expect orelse return error.TestFailed;
+
+            try std.testing.expectEqual(eql_h.shape.elems(), expect.len);
+            for (0..expect.len) |i| {
+                try std.testing.expectEqual(expect[i], eql_h.s()[i]);
+            }
         }
     }
 }

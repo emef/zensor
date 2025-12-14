@@ -1,7 +1,8 @@
 const std = @import("std");
 
 const cuda = @import("cuda");
-const Tensor = @import("tensor").Tensor;
+
+const Tensor = @import("../root.zig").Tensor;
 
 extern "C" fn mmulNaive(
     a: [*]i32,

@@ -48,6 +48,8 @@ pub fn launchKernel(
     const spec: KernelSpec = @constCast(&kernel).spec();
     var arg_ptrs = @constCast(&spec).args;
 
+    std.debug.print("launching kernel {any}\n", .{kernel});
+
     try dev.set();
     const code = cudaLaunchKernel(
         spec.func,

@@ -19,6 +19,12 @@ pub const Stream = struct {
         return Stream{ .ptr = ptr };
     }
 
+    pub fn sync(self: Stream) core.Error!void {
+        if (cudaStreamSynchronize(self.ptr) != 0) {
+            return error.TODO;
+        }
+    }
+
     pub fn deinit(self: Stream) void {
         if (cudaStreamDestroy(self.ptr) != 0) {
             @panic("failed to destroy cuda stream");

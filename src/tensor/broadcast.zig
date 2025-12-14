@@ -11,6 +11,13 @@ pub fn broadcastTensors(
     left: @TypeOf(left_),
     right: @TypeOf(right_),
 } {
+    // Two tensors are “broadcastable” if the following rules hold:
+    // * Each tensor has at least one dimension.
+    // * When iterating over the dimension sizes, starting at the
+    //   trailing dimension, the dimension sizes must either be equal,
+    //   one of them is 1, or one of them does not exist.
+
+    // TODO: this is not correct (doesn't handle dimension 1 broadcast)!
     var left_out = left_;
     var right_out = right_;
     if (left_.shape.len > right_.shape.len) {

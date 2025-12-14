@@ -2,10 +2,26 @@ const std = @import("std");
 
 const cuda = @import("cuda");
 const DType = @import("core").DType;
-const Location = @import("tensor").Location;
-const Tensor = @import("tensor").Tensor;
 
-extern const eqlTyped_i32: anyopaque;
+const tensor = @import("../root.zig");
+const Location = tensor.Location;
+const Tensor = tensor.Tensor;
+const common = @import("common.zig");
+const TensorInfo = common.TensorInfo;
+const KernelArgs = common.KernelArgs;
+
+extern const eqlStrided_bool: anyopaque;
+extern const eqlStrided_f16: anyopaque;
+extern const eqlStrided_f32: anyopaque;
+extern const eqlStrided_f64: anyopaque;
+extern const eqlStrided_i8: anyopaque;
+extern const eqlStrided_i16: anyopaque;
+extern const eqlStrided_i32: anyopaque;
+extern const eqlStrided_i64: anyopaque;
+extern const eqlStrided_u8: anyopaque;
+extern const eqlStrided_u16: anyopaque;
+extern const eqlStrided_u32: anyopaque;
+extern const eqlStrided_u64: anyopaque;
 
 pub fn KEql(dtype: DType) type {
     return struct {
@@ -15,9 +31,11 @@ pub fn KEql(dtype: DType) type {
 
         // kernel args:
         a_ptr: ?*anyopaque,
+        a_info: TensorInfo,
         b_ptr: ?*anyopaque,
+        b_info: TensorInfo,
         out_ptr: ?*anyopaque,
-        elems: i32,
+        kernel_args: KernelArgs,
 
         pub const Args = struct {
             a: Tensor(dtype),
@@ -33,10 +51,6 @@ pub fn KEql(dtype: DType) type {
 
             if (t.storage != .cuda) {
                 return error.WrongDevice;
-            }
-
-            if (!t.isContiguous()) {
-                return error.NotContiguous;
             }
         }
 
@@ -63,22 +77,51 @@ pub fn KEql(dtype: DType) type {
                     },
                 },
                 .a_ptr = args.a.storage.cuda.ptrOffset(args.a.offset),
-                .b_ptr = args.a.storage.cuda.ptrOffset(args.b.offset),
-                .out_ptr = args.a.storage.cuda.ptrOffset(args.out.offset),
-                .elems = @intCast(out_elems),
+                .a_info = TensorInfo{
+                    .strides = @bitCast(args.a.strides.data),
+                    .ndim = @intCast(args.a.strides.len),
+                },
+                .b_ptr = args.b.storage.cuda.ptrOffset(args.b.offset),
+                .b_info = TensorInfo{
+                    .strides = @bitCast(args.b.strides.data),
+                    .ndim = @intCast(args.b.strides.len),
+                },
+                .out_ptr = args.out.storage.cuda.ptrOffset(args.out.offset),
+                .kernel_args = KernelArgs{
+                    .shape = @bitCast(args.out.shape.data),
+                    .ndim = @intCast(args.out.shape.len),
+                    .elems = @intCast(out_elems),
+                },
             };
         }
 
         pub fn spec(self: *Self) cuda.KernelSpec {
             const args = cuda.kernelArgs(&.{
                 @ptrCast(&self.a_ptr),
+                @ptrCast(&self.a_info),
                 @ptrCast(&self.b_ptr),
+                @ptrCast(&self.b_info),
                 @ptrCast(&self.out_ptr),
-                @ptrCast(&self.elems),
+                @ptrCast(&self.kernel_args),
             });
 
+            const func = switch (dtype) {
+                .bool => &eqlStrided_bool,
+                .f16 => &eqlStrided_f16,
+                .f32 => &eqlStrided_f32,
+                .f64 => &eqlStrided_f64,
+                .i8 => &eqlStrided_i8,
+                .i16 => &eqlStrided_i16,
+                .i32 => &eqlStrided_i32,
+                .i64 => &eqlStrided_i64,
+                .u8 => &eqlStrided_u8,
+                .u16 => &eqlStrided_u16,
+                .u32 => &eqlStrided_u32,
+                .u64 => &eqlStrided_u64,
+            };
+
             return cuda.KernelSpec{
-                .func = &eqlTyped_i32,
+                .func = func,
                 .dims = self.dims,
                 .args = args,
             };
@@ -137,6 +180,10 @@ test KEql {
         stream,
     );
 
+    try stream.sync();
+
     const h_out = try d_out.move(host);
     defer h_out.deinit();
+
+    std.debug.print("h_out = {any}\n", .{h_out.s()});
 }
