@@ -30,7 +30,7 @@ pub fn TensorIterator(dtype: DType) type {
             }
 
             const slice: []T = switch (tensor.storage) {
-                .host => |h| h.slice,
+                .host => |h| h.slice[tensor.offset..],
                 else => return error.WrongDevice,
             };
 
@@ -129,5 +129,22 @@ test TensorIterator {
             const el = it.next() orelse return error.TestFailed;
             try std.testing.expectEqual(@as(i32, @intCast(expect)), el);
         }
+    }
+
+    // works with select
+    const row = try tensor.select(.{ 1, 0 });
+    it = try row.iter();
+    try std.testing.expectEqual(8, it.next());
+    try std.testing.expectEqual(9, it.next());
+    try std.testing.expectEqual(10, it.next());
+    try std.testing.expectEqual(11, it.next());
+
+    // works for scalar views
+    const scalar = try tensor.select(.{ 1, 1, 2 });
+    it = try scalar.iter();
+    if (it.next()) |val| {
+        try std.testing.expectEqual(14, val);
+    } else {
+        return error.TestFailed;
     }
 }

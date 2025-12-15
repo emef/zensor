@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <assert.h>
 
-#include "kernels.cuh"
+#include "common.cuh"
 
 
 template <typename T>
