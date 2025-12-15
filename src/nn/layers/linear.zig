@@ -97,7 +97,7 @@ test "Linear forward validation" {
     try std.testing.expectError(error.WrongShape, lin.forward(ctx, x));
 }
 
-test "Linear forward" {
+test "Linear forward no bias" {
     const ctx = try Context.default();
     const gpu: Location = .{ .cuda = ctx.device };
     const host: Location = .{ .host = std.testing.allocator };
@@ -108,14 +108,12 @@ test "Linear forward" {
     });
     defer lin.deinit();
 
-    var weight_buf = [8]f32{
+    try lin.weight.storage.cuda.hostToDevice(&[8]f32{
         1, 3,
         5, 7,
         2, 4,
         6, 8,
-    };
-
-    try lin.weight.storage.cuda.hostToDevice(&weight_buf);
+    });
 
     const x_batch = try Tensor(.f32).fromSlice(gpu, &[_]f32{
         0.5, 1.5,
@@ -152,5 +150,50 @@ test "Linear forward" {
 
         -7,  -19, -10, -22,
         -15, -43, -22, -50,
+    });
+}
+
+test "Linear forward with bias" {
+    const ctx = try Context.default();
+    const gpu: Location = .{ .cuda = ctx.device };
+    const host: Location = .{ .host = std.testing.allocator };
+    const lin = try Linear(.f32).init(gpu, .{
+        .in_features = 2,
+        .out_features = 4,
+        .bias = true,
+    });
+    defer lin.deinit();
+
+    try lin.weight.storage.cuda.hostToDevice(&[8]f32{
+        1, 3,
+        5, 7,
+        2, 4,
+        6, 8,
+    });
+
+    try lin.bias.?.storage.cuda.hostToDevice(&[4]f32{
+        1, 2, 3, 4,
+    });
+
+    const x = try Tensor(.f32).fromSlice(gpu, &[_]f32{
+        0.5, 1.5,
+        3.5, 4.5,
+    }, .{ 2, 2 });
+
+    defer x.deinit();
+
+    const fwd = try lin.forward(ctx, x);
+    defer fwd.deinit();
+
+    try ctx.sync();
+
+    try std.testing.expect(fwd.shape.eql(.{ 2, 4 }));
+
+    const fwd_h = try fwd.copy(host);
+    defer fwd_h.deinit();
+
+    try expectTensorEqual(fwd, &[_]f32{
+        6,  15, 10, 19,
+        18, 51, 28, 61,
     });
 }

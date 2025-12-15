@@ -603,10 +603,7 @@ pub fn Tensor(dtype_: DType) type {
         }
 
         pub fn add(self: Self, ctx: Context, rhs: Self) Error!Self {
-            _ = self;
-            _ = ctx;
-            _ = rhs;
-            return error.NotImplemented;
+            return try ops.add(dtype, ctx, self, rhs, .{});
         }
     };
 }

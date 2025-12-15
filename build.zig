@@ -28,13 +28,13 @@ pub fn build(b: *std.Build) void {
     tensor.linkSystemLibrary("cublas", .{});
     addCudaSources(b, tensor, "src/tensor/kernels/");
 
-    const layers = b.addModule("layers", .{
-        .root_source_file = b.path("src/layers/layers.zig"),
+    const nn = b.addModule("nn", .{
+        .root_source_file = b.path("src/nn/root.zig"),
         .target = target,
     });
-    layers.addImport("core", core);
-    layers.addImport("tensor", tensor);
-    layers.addImport("cuda", cuda);
+    nn.addImport("core", core);
+    nn.addImport("tensor", tensor);
+    nn.addImport("cuda", cuda);
 
     const mod = b.addModule("zensor", .{
         .root_source_file = b.path("src/root.zig"),
@@ -81,16 +81,16 @@ pub fn build(b: *std.Build) void {
     const run_tensor_tests = b.addRunArtifact(tensor_tests);
     tensor_tests.linkLibC();
 
-    const layers_tests = b.addTest(.{
-        .root_module = layers,
+    const nn_tests = b.addTest(.{
+        .root_module = nn,
     });
-    const run_layers_tests = b.addRunArtifact(layers_tests);
-    layers_tests.linkLibC();
+    const run_nn_tests = b.addRunArtifact(nn_tests);
+    nn_tests.linkLibC();
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_tensor_tests.step);
-    test_step.dependOn(&run_layers_tests.step);
+    test_step.dependOn(&run_nn_tests.step);
 
     b.installArtifact(tensor_tests);
 }
