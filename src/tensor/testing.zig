@@ -12,7 +12,7 @@ pub fn expectEqual(lhs: anytype, rhs_in: anytype) !void {
     if (type_info == .pointer) {
         rhs = try @TypeOf(lhs).fromSlice(lhs.loc(), rhs_in, lhs.shape);
     } else {
-        rhs = rhs.view(rhs.shape);
+        rhs = try rhs.view(rhs.shape);
     }
     defer rhs.deinit();
 

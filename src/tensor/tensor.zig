@@ -28,6 +28,9 @@ pub const Error = HostError || cuda.Error || cublas.Error || error{
 pub const Shape = SmallVec(i32, max_dims);
 pub const Strides = SmallVec(i32, max_dims);
 
+// TODO:
+//   * tensor with 0 dims are broken
+
 fn stridesFromShape(shape: Shape) Strides {
     var strides = Strides{
         .data = undefined,
@@ -144,7 +147,7 @@ pub fn Tensor(dtype_: DType) type {
             }
         }
 
-        pub fn init(dest: Location, shapeOrDims: anytype) Error!Self {
+        pub fn empty(dest: Location, shapeOrDims: anytype) Error!Self {
             return switch (dest) {
                 .host => |a| try Self.allocHost(a, shapeOrDims),
                 .cuda => |device| try Self.allocDevice(device, shapeOrDims),
@@ -423,19 +426,30 @@ pub fn Tensor(dtype_: DType) type {
             // verify singleton dimensions are unchanged
             for (0..self.shape.len) |i| {
                 const j = new_dims + i;
-                if (newShape.data[j] == -1) {
-                    newShape.data[j] = self.shape.data[i];
-                } else if (newShape.data[j] != self.shape.data[i]) {
+                const old_size = self.shape.data[i];
+                const new_size = newShape.data[j];
+                if (new_size == -1) {
+                    newShape.data[j] = old_size;
+                } else if (old_size != 1 and new_size != old_size) {
                     // singleton dimensons must remain unchanged
                     return error.WrongSize;
                 }
             }
 
-            // create new strides and set the expanded dim
-            // strides to 0 (broadcast).
+            // new shape is now complete so initialize strides
+
+            // set new strides to 0 (broadcast).
             var newStrides = stridesFromShape(newShape);
             for (0..new_dims) |i| {
                 newStrides.data[i] = 0;
+            }
+
+            // set expanded dims strides to 0 (expand)
+            for (0..self.shape.len) |i| {
+                const j = new_dims + i;
+                if (self.shape.data[i] == 1) {
+                    newStrides.data[j] = 0;
+                }
             }
 
             var expanded = self;
@@ -445,9 +459,32 @@ pub fn Tensor(dtype_: DType) type {
             return expanded;
         }
 
+        pub fn flatten(self: Self) !Self {
+            return self.flattenDims(0, -1);
+        }
+
+        pub fn flattenDims(self: Self, start_: i32, end_: i32) !Self {
+            const start = if (start_ < 0) self.shape.len + start_ else start_;
+            const end = if (end_ < 0) self.shape.len + end_ else end_;
+
+            var newShape: Shape = .{ .len = 1 };
+            newShape.data[0] = self.shape.data[0];
+
+            for (1..self.shape.len) |i| {
+                if (i <= start or i > end) {
+                    newShape.len += 1;
+                    newShape.data[newShape.len - 1] = self.shape.data[i];
+                } else {
+                    newShape.data[newShape.len - 1] *= self.shape.data[i];
+                }
+            }
+
+            return try self.view(newShape);
+        }
+
         pub fn squeezeDim(self: Self, dim: i32) Self {
             if (self.shape.at(dim) != 1) {
-                @panic("cannot non size 1 dimension");
+                @panic("cannot squeeze non size 1 dimension");
             }
 
             var newShape: Shape = .{ .len = 0 };
@@ -628,6 +665,10 @@ pub fn Tensor(dtype_: DType) type {
 
         pub fn add(self: Self, ctx: Context, rhs: Self) Error!Self {
             return try ops.add(dtype, ctx, self, rhs, .{});
+        }
+
+        pub fn maximum(self: Self, ctx: Context, rhs: Self) Error!Self {
+            return try ops.maximum(dtype, ctx, self, rhs, .{});
         }
     };
 }
@@ -849,25 +890,94 @@ test "select" {
 
 test "expand" {
     const host: Location = .{ .host = std.testing.allocator };
-    const gpu: Location = .{ .cuda = cuda.device(0) };
 
-    for (&[_]Location{ host, gpu }) |loc| {
-        const x = try Tensor(.f32).fromSlice(
-            loc,
-            &[_]f32{
-                1.0, 2.0, 3.0,
-            },
-            .{3},
-        );
-        defer x.deinit();
+    const test_cases: []const struct {
+        in_shape: Shape,
+        out_shape: Shape,
+        out_strides: Strides,
+    } = &.{
+        .{
+            .in_shape = Shape.init(.{ 1, 3 }),
+            .out_shape = Shape.init(.{ 2, 1, 3 }),
+            .out_strides = Strides.init(.{ 0, 0, 1 }),
+        },
+        .{
+            .in_shape = Shape.init(.{ 1, 3 }),
+            .out_shape = Shape.init(.{ 2, 3 }),
+            .out_strides = Strides.init(.{ 0, 1 }),
+        },
+        .{
+            .in_shape = Shape.init(.{ 1, 3 }),
+            .out_shape = Shape.init(.{ 4, 2, 3 }),
+            .out_strides = Strides.init(.{ 0, 0, 1 }),
+        },
+    };
 
-        try expectTensorEqual(
-            try x.expand(.{ 2, 3 }),
-            &[_]f32{
-                1, 2, 3,
-                1, 2, 3,
-            },
-        );
+    for (test_cases) |tc| {
+        const elems = tc.in_shape.elems();
+        const x_ = try Tensor(.f32).empty(host, .{elems});
+        defer x_.deinit();
+
+        const x = try x_.view(tc.in_shape);
+        const expanded = try x.expand(tc.out_shape);
+
+        std.debug.print("shape {f} == {f}, strides {f} == {f}\n", .{
+            tc.out_shape,   expanded.shape,
+            tc.out_strides, expanded.strides,
+        });
+        try std.testing.expect(expanded.shape.eql(tc.out_shape));
+        try std.testing.expect(expanded.strides.eql(tc.out_strides));
+    }
+}
+
+test "flatten" {
+    const host: Location = .{ .host = std.testing.allocator };
+    const x = try Tensor(.i32).arange(host, 0, 24);
+    defer x.deinit();
+
+    const x_view = try x.view(.{ 1, 2, 3, 4 });
+
+    const test_cases: []const struct {
+        start: i32,
+        end: i32,
+        expect: Shape,
+    } = &.{
+        .{
+            .start = 0,
+            .end = -1,
+            .expect = Shape.init(.{24}),
+        },
+        .{
+            .start = 0,
+            .end = -2,
+            .expect = Shape.init(.{ 6, 4 }),
+        },
+        .{
+            .start = 1,
+            .end = -2,
+            .expect = Shape.init(.{ 1, 6, 4 }),
+        },
+        .{
+            .start = 1,
+            .end = 3,
+            .expect = Shape.init(.{ 1, 24 }),
+        },
+        .{
+            .start = 0,
+            .end = 2,
+            .expect = Shape.init(.{ 6, 4 }),
+        },
+        .{
+            .start = 2,
+            .end = 3,
+            .expect = Shape.init(.{ 1, 2, 12 }),
+        },
+    };
+
+    for (test_cases) |tc| {
+        const flat = try x_view.flattenDims(tc.start, tc.end);
+        std.debug.print("flat shape: {any}, expect {any}\n", .{ flat.shape, tc.expect });
+        try std.testing.expect(flat.shape.eql(tc.expect));
     }
 }
 

@@ -28,8 +28,8 @@ pub fn Linear(dtype: DType) type {
             const b_shape = Shape.init(.{opts.out_features});
 
             return Self{
-                .weight = try Tensor(dtype).init(loc, w_shape),
-                .bias = if (opts.bias) try Tensor(dtype).init(loc, b_shape) else null,
+                .weight = try Tensor(dtype).empty(loc, w_shape),
+                .bias = if (opts.bias) try Tensor(dtype).empty(loc, b_shape) else null,
             };
         }
 
@@ -41,10 +41,10 @@ pub fn Linear(dtype: DType) type {
         pub fn forward(self: Self, ctx: Context, x: Tensor(dtype)) Error!Tensor(dtype) {
             if (x.shape.at(-1) != self.weight.shape.at(1)) {
                 std.debug.print(
-                    "expected last dim {d}, found {d}\n",
+                    "incompatible shapes {f} vs {f}\n",
                     .{
-                        x.shape.at(-1),
-                        self.weight.shape.at(0),
+                        x.shape,
+                        self.weight.shape,
                     },
                 );
                 return error.WrongShape;

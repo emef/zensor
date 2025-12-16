@@ -104,7 +104,7 @@ pub fn matmul(
         rhs_stride = k * n;
     }
 
-    var out = try Tensor(C).init(lhs.loc(), .{ batch, m, n });
+    var out = try Tensor(C).empty(lhs.loc(), .{ batch, m, n });
     const out_stride = m * n;
 
     std.debug.print("matmul {f} x {f} (m={d} k={d} n={d}) trans_lhs={any}, trans_rhs={any}\n", .{

@@ -43,7 +43,7 @@ pub fn add(
 }
 
 fn host_add(comptime dtype: DType, bcast: anytype, opts: AddOpts(dtype)) Error!Tensor(dtype) {
-    const out = opts.out orelse try Tensor(dtype).init(bcast.left.loc(), bcast.left.shape);
+    const out = opts.out orelse try Tensor(dtype).empty(bcast.left.loc(), bcast.left.shape);
 
     if (!out.loc().eql(bcast.left.loc())) {
         return error.WrongDevice;
@@ -69,7 +69,7 @@ fn cuda_add(
     opts: AddOpts(dtype),
 ) Error!Tensor(dtype) {
     const device = bcast.left.loc().cuda;
-    const out = opts.out orelse try Tensor(dtype).init(bcast.left.loc(), bcast.left.shape);
+    const out = opts.out orelse try Tensor(dtype).empty(bcast.left.loc(), bcast.left.shape);
 
     if (!out.loc().eql(bcast.left.loc())) {
         return error.WrongDevice;

@@ -93,7 +93,7 @@ pub const SafeTensors = struct {
 
             const dtype = dtype_map.get(entry_val.dtype) orelse unreachable;
 
-            std.debug.print("header entry {any}\n", .{entry_val});
+            std.debug.print("safetensor: {s} {any}\n", .{ name, entry_val });
 
             if (entry_val.data_offsets.len != 2) unreachable;
             const start = entry_val.data_offsets[0];

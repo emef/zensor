@@ -32,7 +32,7 @@ pub fn eql(
 fn host_eql(bcast: anytype) Error!Tensor(.bool) {
     const lhs = bcast.left;
     const rhs = bcast.right;
-    const out = try Tensor(.bool).init(lhs.loc(), lhs.shape);
+    const out = try Tensor(.bool).empty(lhs.loc(), lhs.shape);
     var slice: []bool = out.storage.host.slice;
 
     var left_it = try lhs.iter();

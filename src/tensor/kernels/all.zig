@@ -137,7 +137,7 @@ test KAll {
         },
     };
 
-    const out = try Tensor(.i32).init(gpu, .{1});
+    const out = try Tensor(.i32).empty(gpu, .{1});
     defer out.deinit();
 
     for (test_cases, 0..) |tc, i| {
