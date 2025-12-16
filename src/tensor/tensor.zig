@@ -55,16 +55,28 @@ pub fn HostMem(dtype: DType) type {
 
         slice: []T,
         alloc: std.mem.Allocator,
+        owned: bool,
 
         pub fn init(alloc: std.mem.Allocator, shape: Shape) HostError!Self {
             return Self{
                 .slice = try alloc.alloc(T, shape.elems()),
                 .alloc = alloc,
+                .owned = true,
+            };
+        }
+
+        pub fn memoryView(alloc: std.mem.Allocator, buf: []T) Self {
+            return Self{
+                .slice = buf,
+                .alloc = alloc,
+                .owned = false,
             };
         }
 
         pub fn deinit(self: Self) void {
-            self.alloc.free(self.slice);
+            if (self.owned) {
+                self.alloc.free(self.slice);
+            }
         }
     };
 }
@@ -193,6 +205,18 @@ pub fn Tensor(dtype_: DType) type {
                     return out;
                 },
             }
+        }
+
+        pub fn memoryView(alloc: std.mem.Allocator, mem: []T, shapeOrDims: anytype) Self {
+            const shape = Shape.init(shapeOrDims);
+
+            return Self{
+                .offset = 0,
+                .shape = shape,
+                .strides = stridesFromShape(shape),
+                .storage = .{ .host = HostMem(dtype).memoryView(alloc, mem) },
+                .owned = false,
+            };
         }
 
         pub fn fromCudaBuffer(mem: cuda.DeviceMem(dtype), shapeOrDims: anytype) Error!Self {
@@ -447,7 +471,7 @@ pub fn Tensor(dtype_: DType) type {
         pub fn unsqueeze(self: Self, dim_: i32) Self {
             var dim = dim_;
             if (dim < 0) {
-                dim = dim + self.shape.len + 1;
+                dim = dim + self.shape.len;
             }
 
             var newShape: Shape = .{ .len = self.shape.len + 1 };

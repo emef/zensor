@@ -1,2 +1,8 @@
 .zig-cache
 zig-out
+
+checkpoints
+.venv
+
+__pycache__
+src/examples/train_py/data

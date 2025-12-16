@@ -1,0 +1,26 @@
+[project]
+name = "examples"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "datasets>=2.14.4",
+    "ipython>=9.8.0",
+    "safetensors>=0.7.0",
+    "torch>=2.9.1",
+    "torchvision>=0.24.1",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu126"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.8.0",
+]

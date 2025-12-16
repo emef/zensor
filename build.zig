@@ -44,11 +44,12 @@ pub fn build(b: *std.Build) void {
     mod.addImport("core", core);
     mod.addImport("cuda", cuda);
     mod.addImport("tensor", tensor);
+    mod.addImport("nn", nn);
 
-    const exe = b.addExecutable(.{
-        .name = "zensor",
+    const examples_exe = b.addExecutable(.{
+        .name = "zensor_examples",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/examples/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -57,12 +58,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.linkLibC();
+    examples_exe.linkLibC();
 
-    b.installArtifact(exe);
+    b.installArtifact(examples_exe);
 
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
+    const run_step = b.step("run", "Run the examples");
+    const run_cmd = b.addRunArtifact(examples_exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 

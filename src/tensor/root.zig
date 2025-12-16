@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const Context = @import("context.zig");
 pub const ops = @import("ops/root.zig");
+pub const SafeTensors = @import("safetensors.zig").SafeTensors;
 const tensor = @import("tensor.zig");
 pub const max_dims = tensor.max_dims;
 pub const Tensor = tensor.Tensor;
@@ -21,4 +22,5 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(broadcast);
     std.testing.refAllDecls(ops);
+    std.testing.refAllDecls(@import("safetensors.zig"));
 }

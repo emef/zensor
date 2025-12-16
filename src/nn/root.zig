@@ -1,6 +1,7 @@
 const std = @import("std");
 
-pub const layers = @import("layers/root.zig");
+const layers = @import("layers/root.zig");
+pub const Linear = layers.Linear;
 
 test {
     std.testing.refAllDecls(@This());
